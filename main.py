@@ -93,7 +93,11 @@ def run_simulation() -> None:
         next_population: List[Agent] = []
 
         for agent in population:
+            pending_requests = len(agent.tool_requests)
             agent.step()
+            for request in agent.tool_requests[pending_requests:]:
+                print(f"\n🔧 {agent.name} is requesting a capability it doesn't have: {request}")
+                print("   Review core/action_policy.py (category) and tools/ (implementation) if you agree.\n")
 
             if agent.wallet.is_extinct():
                 logger.info("%s went extinct at cycle %d", agent.name, cycle)

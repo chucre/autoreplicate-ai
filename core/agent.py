@@ -22,6 +22,11 @@ from core.wallet import Wallet
 
 logger = logging.getLogger(__name__)
 
+# Sentinel an agent's decision can reply with instead of a tool name, to ask
+# a human for a capability it doesn't have. This never grants anything by
+# itself - see Agent.step() and the module docstring's allowlist note.
+TOOL_REQUEST_PREFIX = "REQUEST_TOOL:"
+
 
 @dataclass
 class Genome:
@@ -67,6 +72,7 @@ class Agent:
         self._llm_decide = llm_decide or self._default_llm_decide
         self.generation = 0
         self.alive = True
+        self.tool_requests: List[str] = []
 
     def available_tools(self) -> List[ToolSpec]:
         """Tools this agent is allowed to use, that it can currently afford."""
@@ -80,8 +86,9 @@ class Agent:
     def step(self) -> Optional[str]:
         """Run one decision cycle: choose a tool, pay its metabolic cost, run it.
 
-        Returns the tool's output, or None if the agent is extinct or has
-        nothing it can afford/is allowed to do this cycle.
+        Returns the tool's output, or None if the agent is extinct, has
+        nothing it can afford/is allowed to do, or just asked for a new
+        capability instead of using an existing tool.
         """
         if self.wallet.is_extinct():
             self.alive = False
@@ -93,6 +100,13 @@ class Agent:
             return None
 
         chosen_name = self._llm_decide(self.genome.strategy_prompt, options, self.genome.temperature)
+
+        if chosen_name.startswith(TOOL_REQUEST_PREFIX):
+            request = chosen_name[len(TOOL_REQUEST_PREFIX):].strip()
+            self.tool_requests.append(request)
+            logger.warning("%s is requesting a capability it doesn't have: %s", self.name, request)
+            return None
+
         tool = self.tools.get(chosen_name)
         if tool is None or tool not in options:
             logger.warning("%s: decision picked unavailable tool %r, skipping cycle", self.name, chosen_name)
@@ -120,7 +134,10 @@ class Agent:
         user_prompt = (
             f"Your current balance is {self.wallet.balance}.\n"
             f"Available tools:\n{tool_menu}\n\n"
-            "Reply with only the exact name of the one tool to run next."
+            "Reply with only the exact name of the one tool to run next.\n"
+            "If none of these tools let you pursue your strategy, you may instead reply with "
+            f'exactly "{TOOL_REQUEST_PREFIX} <one-line description of the capability you need and why>" '
+            "- a human will review this before anything is added; you cannot grant yourself new tools."
         )
         return self.connector.complete(
             system_prompt=strategy_prompt, user_prompt=user_prompt, temperature=temperature
