@@ -80,7 +80,7 @@ class Spawner:
             action_policy=ActionPolicy(parent.action_policy.allowed_categories),
             genome=child_genome,
             tools=tools,
-            model=parent.model,
+            connector=parent.connector,
         )
         child.generation = parent.generation + 1
         logger.info(

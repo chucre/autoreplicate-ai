@@ -11,19 +11,16 @@ grants itself a new capability.
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Callable, Dict, List, Optional, Tuple
 
 from core.action_policy import ActionCategory, ActionPolicy
+from core.llm_connectors import get_connector
+from core.llm_connectors.base import LlmConnector
 from core.wallet import Wallet
 
 logger = logging.getLogger(__name__)
-
-# Unset by default: let the `claude` CLI use whatever model it's configured
-# for. Set AGENT_MODEL to pin a specific one (passed as `claude ... --model`).
-DEFAULT_MODEL = os.environ.get("AGENT_MODEL")
 
 
 @dataclass
@@ -59,14 +56,14 @@ class Agent:
         genome: Genome,
         tools: Dict[str, ToolSpec],
         llm_decide: Optional[LlmDecide] = None,
-        model: Optional[str] = DEFAULT_MODEL,
+        connector: Optional[LlmConnector] = None,
     ) -> None:
         self.name = name
         self.wallet = wallet
         self.action_policy = action_policy
         self.genome = genome
         self.tools = tools
-        self.model = model
+        self.connector = connector or get_connector()
         self._llm_decide = llm_decide or self._default_llm_decide
         self.generation = 0
         self.alive = True
@@ -112,46 +109,13 @@ class Agent:
         return result
 
     def _default_llm_decide(self, strategy_prompt: str, options: List[ToolSpec], temperature: float) -> str:
-        """Ask Claude which tool to run next via the `claude` CLI in headless
-        mode, authenticated with CLAUDE_CODE_OAUTH_TOKEN (a Claude
-        subscription token from `claude setup-token`) instead of a metered
-        Anthropic API key.
-
-        `temperature` isn't passed through — the CLI doesn't expose sampling
-        params — it only shapes Genome mutation in Spawner. Each call spins
-        up a full Claude Code session (real latency, session overhead) and
-        draws on the subscription's usage limits rather than being billed
-        per token, so this fits a slow simulation loop, not a tight one.
-        """
-        import json
-        import subprocess
-
-        if not os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
-            raise RuntimeError(
-                "CLAUDE_CODE_OAUTH_TOKEN is not set. Generate one with `claude setup-token` "
-                "(requires a Claude subscription) and export it before running the simulation."
-            )
-
+        """Ask this agent's configured LlmConnector which tool to run next."""
         tool_menu = "\n".join(f"- {tool.name}: {tool.description} (cost={tool.cost})" for tool in options)
-        prompt = (
+        user_prompt = (
             f"Your current balance is {self.wallet.balance}.\n"
             f"Available tools:\n{tool_menu}\n\n"
             "Reply with only the exact name of the one tool to run next."
         )
-
-        command = ["claude", "-p", prompt, "--append-system-prompt", strategy_prompt, "--output-format", "json"]
-        if self.model:
-            command += ["--model", self.model]
-
-        try:
-            completed = subprocess.run(command, capture_output=True, text=True, timeout=120)
-        except FileNotFoundError as exc:
-            raise RuntimeError("the `claude` CLI was not found on PATH; install Claude Code to use it here") from exc
-
-        if completed.returncode != 0:
-            raise RuntimeError(f"claude CLI failed (exit {completed.returncode}): {completed.stderr.strip()}")
-
-        payload = json.loads(completed.stdout)
-        if payload.get("is_error"):
-            raise RuntimeError(f"claude CLI returned an error: {payload}")
-        return payload["result"].strip()
+        return self.connector.complete(
+            system_prompt=strategy_prompt, user_prompt=user_prompt, temperature=temperature
+        ).strip()
