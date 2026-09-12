@@ -101,8 +101,14 @@ class Agent:
         self.action_policy.check(tool.category)
         if tool.cost > 0:
             self.wallet.debit(tool.cost, f"metabolic cost: {tool.name}")
-        result = tool.run()
-        logger.info("%s: ran %s for cost %s -> %s", self.name, tool.name, tool.cost, result)
+
+        try:
+            result = tool.run()
+        except Exception as exc:  # noqa: BLE001 - a tool failing must not take the whole simulation down
+            logger.warning("%s: %s raised %s: %s", self.name, tool.name, type(exc).__name__, exc)
+            result = None
+        else:
+            logger.info("%s: ran %s for cost %s -> %s", self.name, tool.name, tool.cost, result)
 
         if self.wallet.is_extinct():
             self.alive = False
